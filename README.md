@@ -7,3 +7,7 @@
 ```bash
 # install dependencies
 pip install pyside6
+```
+
+# btw assets from here
+> [https://kenney.nl/assets/playing-cards-pack](https://kenney.nl/assets/playing-cards-pack)
