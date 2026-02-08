@@ -44,9 +44,10 @@ def play_wav_with_system(path):
     plat = platform.system()
     try:
         if plat == "Windows":
-            import winsound
-
-            winsound.PlaySound(path, winsound.SND_FILENAME | winsound.SND_ASYNC)
+            from pygame import mixer
+            mixer.init()
+            mixer.music.load(path)
+            mixer.music.play()
             return
         if plat == "Darwin":
             # macOS

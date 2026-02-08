@@ -17,6 +17,11 @@
    BLACKJACK CHANGELOG
 ==========================
 
+----------------------------
+Version 0.2.1 - Audio Hotfix
+
+• Fixed the issue of sound effect not playing
+----------------------------
 
 ---------------------------------
 Version 0.2 - Rules and Animation

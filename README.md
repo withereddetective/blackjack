@@ -6,7 +6,7 @@
 
 ```bash
 # install dependencies
-pip install pyside6
+pip install pyside6 pygame
 ```
 
 # btw assets from here
