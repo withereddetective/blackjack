@@ -1,70 +1,141 @@
 import sys
 import os
 import random
-from time import sleep
-from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, 
-                             QHBoxLayout, QLabel, QPushButton, QDialog)
+from PySide6.QtWidgets import (
+    QApplication, QMainWindow, QWidget, QVBoxLayout,
+    QHBoxLayout, QLabel, QPushButton, QDialog,
+)
 from PySide6.QtGui import QPixmap
-from PySide6.QtCore import Qt, QPropertyAnimation, QPoint, QEasingCurve, QTimer, QSequentialAnimationGroup, QParallelAnimationGroup, QAbstractAnimation
+from PySide6.QtCore import (
+    Qt, QPropertyAnimation, QPoint, QEasingCurve,
+    QTimer, QSequentialAnimationGroup, QAbstractAnimation, QRect,
+)
 
+
+# ----------------------------------------------------------------------
+# card image loading (bj_assets)
+# ----------------------------------------------------------------------
 def get_card_pixmap_static(num=None, suit_idx=None, is_back=False):
-    # strings and paths in all lowercase
     base_dir = os.path.dirname(os.path.abspath(__file__))
     suits = {1: "clubs", 2: "diamonds", 3: "hearts", 4: "spades"}
     ranks = {1: "a", 11: "j", 12: "q", 13: "k"}
-    filename = "card_back.png" if is_back else f"card_{suits[suit_idx]}_{ranks.get(num, f'{num:02d}')}.png"
+
+    if is_back:
+        filename = "card_back.png"
+    else:
+        rank_str = ranks.get(num, f"{num:02d}")
+        filename = f"card_{suits[suit_idx]}_{rank_str}.png"
+
     path = os.path.join(base_dir, "bj_assets", filename)
-    if not os.path.exists(path): return QPixmap() 
+    if not os.path.exists(path):
+        return QPixmap()
+
     return QPixmap(path).scaled(100, 150, Qt.KeepAspectRatio, Qt.SmoothTransformation)
 
+
+# ----------------------------------------------------------------------
+# card widget with flip animation for hidden → face-up
+# ----------------------------------------------------------------------
 class CardWidget(QLabel):
     def __init__(self, card_data, is_hidden=False, parent=None):
         super().__init__(parent)
-        self.card_data = card_data
+        self.card_data = card_data  # (num, suit_idx)
         self.is_hidden = is_hidden
         self.setPixmap(get_card_pixmap_static(*card_data, is_back=is_hidden))
         self.setFixedSize(100, 150)
 
     def reveal(self):
-        self.is_hidden = False
-        self.setPixmap(get_card_pixmap_static(*self.card_data))
+        if not self.is_hidden:
+            return
 
+        self.is_hidden = False
+
+        parent = self.parent()
+        if parent is None:
+            self.setPixmap(get_card_pixmap_static(*self.card_data))
+            return
+
+        original_rect = self.geometry()
+        center = original_rect.center()
+
+        narrow_rect = QRect(original_rect)
+        narrow_rect.setWidth(10)
+        narrow_rect.moveCenter(center)
+
+        shrink_anim = QPropertyAnimation(self, b"geometry")
+        shrink_anim.setDuration(150)
+        shrink_anim.setStartValue(original_rect)
+        shrink_anim.setEndValue(narrow_rect)
+        shrink_anim.setEasingCurve(QEasingCurve.InCubic)
+
+        expand_anim = QPropertyAnimation(self, b"geometry")
+        expand_anim.setDuration(150)
+        expand_anim.setStartValue(narrow_rect)
+        expand_anim.setEndValue(original_rect)
+        expand_anim.setEasingCurve(QEasingCurve.OutCubic)
+
+        def swap_pixmap():
+            self.setPixmap(get_card_pixmap_static(*self.card_data))
+
+        shrink_anim.finished.connect(swap_pixmap)
+
+        group = QSequentialAnimationGroup(self)
+        group.addAnimation(shrink_anim)
+        group.addAnimation(expand_anim)
+        group.start(QAbstractAnimation.DeleteWhenStopped)
+
+
+# ----------------------------------------------------------------------
+# main blackjack GUI
+# ----------------------------------------------------------------------
 class BlackjackGUI(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("pyside6 blackjack")
-        # 3. window is now shorter
-        self.setFixedSize(600, 550) 
+        self.setWindowTitle("Blackjack")
+        self.setFixedSize(600, 550)
         self.setStyleSheet("background-color: #006400;")
+
         self.used_cards = set()
         self.player_cards = []
         self.dealer_cards = []
-        self.dealer_widgets = []
         self.player_widgets = []
+        self.dealer_widgets = []
+
+        self.dealer_has_stood = False
+        self.dealer_stand_label = None
+        self._dealer_playing = False
+        self.intro_group = None
+
         self.init_ui()
         self.start_game()
 
+    # ------------------------------------------------------------------
+    # UI setup
+    # ------------------------------------------------------------------
     def init_ui(self):
         self.central = QWidget()
         self.setCentralWidget(self.central)
+
         self.main_layout = QVBoxLayout(self.central)
-        
-        # dealer row
-        self.main_layout.addWidget(QLabel("dealer's hand:"))
+
+        dealer_label = QLabel("Dealer's hand:")
+        dealer_label.setStyleSheet("color: white; font-size: 18px;")
+        self.main_layout.addWidget(dealer_label)
+
         self.dealer_container = QWidget()
         self.dealer_container.setMinimumHeight(160)
+        self.dealer_container.setLayout(None)
         self.main_layout.addWidget(self.dealer_container)
 
-        # player row
-        self.main_layout.addWidget(QLabel("your hand:"))
+        player_label = QLabel("Your hand:")
+        player_label.setStyleSheet("color: white; font-size: 18px;")
+        self.main_layout.addWidget(player_label)
+
         self.player_container = QWidget()
         self.player_container.setMinimumHeight(160)
+        self.player_container.setLayout(None)
         self.main_layout.addWidget(self.player_container)
 
-        self.dealer_container.setLayout(None)
-        self.player_container.setLayout(None)
-
-        # 4. bigger text for win/loss
         self.result_label = QLabel("")
         self.result_label.setAlignment(Qt.AlignCenter)
         self.result_label.setStyleSheet("color: yellow; font-weight: bold; font-size: 32px;")
@@ -76,17 +147,17 @@ class BlackjackGUI(QMainWindow):
         self.main_layout.addWidget(self.totals_label)
 
         self.btn_layout = QHBoxLayout()
-        self.hit_btn = QPushButton("hit")
-        self.stand_btn = QPushButton("stand")
+        self.hit_btn = QPushButton("Hit")
+        self.stand_btn = QPushButton("Stand")
         self.hit_btn.clicked.connect(self.player_hit_logic)
         self.stand_btn.clicked.connect(self.dealer_turn_logic)
         self.btn_layout.addWidget(self.hit_btn)
         self.btn_layout.addWidget(self.stand_btn)
         self.main_layout.addLayout(self.btn_layout)
 
-        for lbl in self.findChildren(QLabel):
-            lbl.setStyleSheet(lbl.styleSheet() + "color: white;")
-
+    # ------------------------------------------------------------------
+    # core game helpers
+    # ------------------------------------------------------------------
     def draw_card(self):
         while True:
             card = (random.randint(1, 13), random.randint(1, 4))
@@ -105,180 +176,302 @@ class BlackjackGUI(QMainWindow):
             ace_count -= 1
         return total
 
+    def player_has_blackjack(self):
+        return (
+            len(self.player_cards) == 2 and
+            self.calculate_score(self.player_cards) == 21
+        )
+
+    # ------------------------------------------------------------------
+    # game start / reset
+    # ------------------------------------------------------------------
     def start_game(self):
         self.used_cards.clear()
         self.player_cards = []
         self.dealer_cards = []
         self.result_label.setText("")
         self.totals_label.setText("")
-        
+        self.dealer_has_stood = False
+        self._dealer_playing = False
+
+        if self.dealer_stand_label is not None:
+            self.dealer_stand_label.hide()
+
         for w in self.dealer_widgets + self.player_widgets:
             w.deleteLater()
         self.dealer_widgets = []
         self.player_widgets = []
-        
+
         self.hit_btn.setEnabled(False)
         self.stand_btn.setEnabled(False)
-        self._dealer_playing = False
 
         self.intro_group = QSequentialAnimationGroup(self)
-        
-        # initial cards (dealer fast, player slow)
-        for i in range(2):
-            c = self.draw_card()
-            self.dealer_cards.append(c)
-            self.add_animated_card(c, self.dealer_container, self.dealer_widgets, 200, len(self.dealer_cards)==2)
-            
-        while self.calculate_score(self.dealer_cards) < 16:
-            c = self.draw_card()
-            self.dealer_cards.append(c)
-            self.add_animated_card(c, self.dealer_container, self.dealer_widgets, 200, True)
 
+        # dealer: exactly 2 cards, first up, second down (hidden), no pre-play auto-hitting
         for i in range(2):
+            c = self.draw_card()
+            self.dealer_cards.append(c)
+            hidden = (i == 1)
+            self.add_animated_card(c, self.dealer_container, self.dealer_widgets, 200, hidden)
+
+        # player: 2 cards, both face up
+        for _ in range(2):
             c = self.draw_card()
             self.player_cards.append(c)
             self.add_animated_card(c, self.player_container, self.player_widgets, 600, False)
-        
-        self.intro_group.finished.connect(self.enable_controls)
+
+        def after_deal():
+            if self.player_has_blackjack():
+                # natural blackjack → auto-stand
+                self.dealer_turn_logic()
+            else:
+                self.enable_controls()
+
+        self.intro_group.finished.connect(after_deal)
         self.intro_group.start()
 
+    # ------------------------------------------------------------------
+    # card animation helper
+    # ------------------------------------------------------------------
     def add_animated_card(self, data, container, widget_list, duration, hidden):
-        # Create card widget with container as parent
         card = CardWidget(data, is_hidden=hidden, parent=container)
         widget_list.append(card)
 
-        # Ensure container has a usable size for positioning
         if container.width() == 0:
             container.setFixedHeight(160)
             container.setFixedWidth(self.width() - 40)
 
-        # layout constants
         card_width = 100
         spacing = 10
         y_pos = 5
         shift = card_width + spacing
 
-        # compute final positions for all cards and place existing cards immediately
         for idx, w in enumerate(widget_list):
             target_x = idx * shift + 10
             target_pos = QPoint(target_x, y_pos)
             if w is card:
-                # incoming card start position (off top center)
                 start_pos = QPoint(container.width() // 2 - card_width // 2, -150)
-                # place the incoming card at the start position (but keep it hidden until animation starts)
                 card.move(start_pos)
                 card.hide()
             else:
-                # place existing card directly at its final slot (no animation)
                 w.move(target_pos)
 
-        # Create animation only for the incoming card
         new_index = len(widget_list) - 1
         new_target = QPoint(new_index * shift + 10, y_pos)
+
         incoming_anim = QPropertyAnimation(card, b"pos", self)
         incoming_anim.setDuration(duration)
         incoming_anim.setStartValue(card.pos())
         incoming_anim.setEndValue(new_target)
         incoming_anim.setEasingCurve(QEasingCurve.OutCubic)
 
-        # show the card when the animation actually starts
-        def _on_anim_state(new_state, old_state):
+        def _on_anim_state(new_state, _old_state):
             if new_state == QAbstractAnimation.Running:
                 card.show()
                 try:
                     incoming_anim.stateChanged.disconnect(_on_anim_state)
                 except Exception:
                     pass
+
         incoming_anim.stateChanged.connect(_on_anim_state)
 
-        # Ensure intro_group exists and is owned by self
-        if not hasattr(self, "intro_group") or self.intro_group is None:
+        if self.intro_group is None:
             self.intro_group = QSequentialAnimationGroup(self)
 
-        # Add only the incoming animation to the sequence
         self.intro_group.addAnimation(incoming_anim)
 
+    # ------------------------------------------------------------------
+    # dealer STAND! label
+    # ------------------------------------------------------------------
+    def show_dealer_stand_label(self):
+        if self.dealer_stand_label is None:
+            self.dealer_stand_label = QLabel("STAND!", self.dealer_container)
+            self.dealer_stand_label.setStyleSheet(
+                "color: white; font-weight: bold; font-size: 24px;"
+            )
+
+        card_width = 100
+        spacing = 10
+        x = len(self.dealer_widgets) * (card_width + spacing) + 20
+        y = 40
+        self.dealer_stand_label.move(x, y)
+        self.dealer_stand_label.show()
+
+    def hide_dealer_stand_label(self):
+        if self.dealer_stand_label is not None:
+            self.dealer_stand_label.hide()
+
+    # ------------------------------------------------------------------
+    # controls enabling
+    # ------------------------------------------------------------------
     def enable_controls(self):
         if self.calculate_score(self.player_cards) < 21:
             self.hit_btn.setEnabled(True)
             self.stand_btn.setEnabled(True)
 
+    # ------------------------------------------------------------------
+    # player hit + dealer reaction
+    # ------------------------------------------------------------------
     def player_hit_logic(self):
-        # disable controls while animating
+        if self._dealer_playing:
+            return
+
         self.hit_btn.setEnabled(False)
         self.stand_btn.setEnabled(False)
 
         c = self.draw_card()
         self.player_cards.append(c)
 
-        # create a fresh animation group for this single card and keep it on self
         self.intro_group = QSequentialAnimationGroup(self)
         self.add_animated_card(c, self.player_container, self.player_widgets, 600, False)
 
         def after_hit():
             p_score = self.calculate_score(self.player_cards)
-            if p_score >= 21:
-                # if player reached or exceeded 21, proceed to dealer turn
-                # use QTimer.singleShot(0, ...) to ensure we return to the event loop
-                QTimer.singleShot(0, self.dealer_turn_logic)
-            else:
-                self.enable_controls()
 
-        # if there are animations, wait for them; otherwise call immediately
+            # If player hits into exactly 21, treat it as stand
+            if p_score == 21:
+                QTimer.singleShot(0, self.dealer_turn_logic)
+                return
+
+            # If player busts, dealer_turn_logic will handle reveal + end
+            if p_score > 21:
+                QTimer.singleShot(0, self.dealer_turn_logic)
+                return
+
+            # Otherwise dealer reacts normally
+            self.dealer_react_after_player_hit()
+
         if self.intro_group.animationCount() == 0:
             after_hit()
         else:
             self.intro_group.finished.connect(after_hit)
             self.intro_group.start()
 
-    def dealer_turn_logic(self):
-        if getattr(self, "_dealer_playing", False):
+    def dealer_react_after_player_hit(self):
+        if self.dealer_has_stood:
+            self.enable_controls()
             return
-        self._dealer_playing = True
 
+        d_score = self.calculate_score(self.dealer_cards)
+
+        if d_score < 17:
+            # dealer hits once, card is face down
+            c = self.draw_card()
+            self.dealer_cards.append(c)
+
+            self.intro_group = QSequentialAnimationGroup(self)
+            self.add_animated_card(c, self.dealer_container, self.dealer_widgets, 400, True)
+
+            def reenable():
+                self.enable_controls()
+
+            if self.intro_group.animationCount() == 0:
+                reenable()
+            else:
+                self.intro_group.finished.connect(reenable)
+                self.intro_group.start()
+        else:
+            # dealer stands (no more hits during player actions)
+            self.dealer_has_stood = True
+            self.show_dealer_stand_label()
+            self.enable_controls()
+
+    # ------------------------------------------------------------------
+    # player stand → dealer's turn
+    # ------------------------------------------------------------------
+    def dealer_turn_logic(self):
+        if self._dealer_playing:
+            return
+
+        self._dealer_playing = True
         self.hit_btn.setEnabled(False)
         self.stand_btn.setEnabled(False)
 
-        for w in self.dealer_widgets: 
-            try:
-                if getattr(w, "is_hidden", False):
-                    w.reveal()
-            except Exception:
-                pass
-                
-        QTimer.singleShot(200, self.end_game)
+        # reveal all hidden dealer cards with flip animation
+        hidden_widgets = [w for w in self.dealer_widgets if getattr(w, "is_hidden", False)]
+        for w in hidden_widgets:
+            w.reveal()
 
+        def after_reveal():
+            if self.dealer_has_stood:
+                # dealer already stood earlier → remove STAND! and finish
+                self.hide_dealer_stand_label()
+                self.end_game()
+                return
+
+            # dealer has NOT stood yet → dealer plays normally (no STAND! text)
+            self.dealer_auto_play()
+
+        if hidden_widgets:
+            QTimer.singleShot(350, after_reveal)
+        else:
+            after_reveal()
+
+    def dealer_auto_play(self):
+        self.intro_group = QSequentialAnimationGroup(self)
+
+        while self.calculate_score(self.dealer_cards) < 17:
+            c = self.draw_card()
+            self.dealer_cards.append(c)
+            # during dealer's own turn, new cards are face up
+            self.add_animated_card(c, self.dealer_container, self.dealer_widgets, 400, False)
+
+        if self.intro_group.animationCount() == 0:
+            self.end_game()
+        else:
+            self.intro_group.finished.connect(self.end_game)
+            self.intro_group.start()
+
+    # ------------------------------------------------------------------
+    # end game + replay
+    # ------------------------------------------------------------------
     def end_game(self):
         p_score = self.calculate_score(self.player_cards)
         d_score = self.calculate_score(self.dealer_cards)
-        
-        # 4. win/loss logic (draw if both bust)
-        if p_score > 21 and d_score > 21: msg = "it's a draw! (both bust)"
-        elif p_score > 21: msg = "you lose! (bust)"
-        elif d_score > 21: msg = "you win! (dealer bust)"
-        elif p_score > d_score: msg = "you win!"
-        elif d_score > p_score: msg = "you lose!"
-        else: msg = "it's a tie!"
-        
-        self.result_label.setText(msg.lower())
-        self.totals_label.setText(f"your: {p_score} | dealer: {d_score}")
-        # 6. delayed play again
+
+        if p_score > 21 and d_score > 21:
+            msg = "It's a draw! (both bust)"
+        elif p_score > 21:
+            msg = "You lose! (bust)"
+        elif d_score > 21:
+            msg = "You win! (dealer bust)"
+        elif p_score > d_score:
+            msg = "You win!"
+        elif d_score > p_score:
+            msg = "You lose!"
+        else:
+            msg = "It's a tie!"
+
+        self.result_label.setText(msg)
+        self.totals_label.setText(f"Your: {p_score} | Dealer: {d_score}")
+
         QTimer.singleShot(2000, self.ask_play_again)
 
     def ask_play_again(self):
         dlg = QDialog(self)
-        dlg.setWindowTitle("play again?")
-        l = QVBoxLayout(dlg)
-        l.addWidget(QLabel("would you like to play again?"))
-        hb = QHBoxLayout()
-        y, n = QPushButton("yes"), QPushButton("no")
-        y.clicked.connect(dlg.accept); n.clicked.connect(dlg.reject)
-        hb.addWidget(y); hb.addWidget(n)
-        l.addLayout(hb)
-        if dlg.exec(): self.start_game()
-        else: self.close()
+        dlg.setWindowTitle("Play again?")
+        layout = QVBoxLayout(dlg)
+        layout.addWidget(QLabel("Would you like to play again?"))
+        btn_row = QHBoxLayout()
+        yes_btn = QPushButton("Yes")
+        no_btn = QPushButton("No")
+        yes_btn.clicked.connect(dlg.accept)
+        no_btn.clicked.connect(dlg.reject)
+        btn_row.addWidget(yes_btn)
+        btn_row.addWidget(no_btn)
+        layout.addLayout(btn_row)
 
+        if dlg.exec():
+            self.start_game()
+        else:
+            self.close()
+
+
+# ----------------------------------------------------------------------
+# main entry
+# ----------------------------------------------------------------------
 if __name__ == "__main__":
     app = QApplication(sys.argv)
-    win = BlackjackGUI(); win.show()
+    win = BlackjackGUI()
+    win.show()
     sys.exit(app.exec())
