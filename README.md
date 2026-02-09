@@ -14,4 +14,4 @@ pip install pyside6 pygame
 > [https://pixabay.com/sound-effects/search/card/](https://pixabay.com/sound-effects/search/card/)
 
 # KNOWN ISSUES
-> audio not playing
+> non rn
