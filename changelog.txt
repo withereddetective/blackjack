@@ -17,6 +17,14 @@
    BLACKJACK CHANGELOG
 ==========================
 
+------------------------
+Version 0.3 - Pygame!!!!
+
+• Ported to Pygame
+• New card assets by HENRY Gonzalez
+• Slight changes
+------------------------
+
 ----------------------------
 Version 0.2.1 - Audio Hotfix
 

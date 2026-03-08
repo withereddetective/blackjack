@@ -1,465 +1,564 @@
+"""
+Blackjack Game Implementation using Pygame.
+
+This module implements a fully functional Blackjack card game with multiple dealer modes,
+animated card dealing and flipping, sound effects, and a complete game flow including
+intro animation, rules selection, gameplay, and end-game results.
+
+Features:
+- Configurable dealer behavior (draw at start, with player, or at end)
+- Smooth animations for card movements and flips with scaling effects
+- Sound effects for card draws, flips, and shuffling
+- Sequential dealing and dealer actions to match reference implementations
+- Professional UI with buttons and text inputs
+
+Classes:
+    Button: Interactive button with hover and selection states
+    TextInput: Numeric input field with up/down buttons
+    Card: Represents a playing card with animation capabilities
+    Game: Main game controller managing state and logic
+
+Author: Kyle Haynes
+Date Last Updated: March 7th, 2026
+"""
+
+import pygame
 import sys
 import os
 import random
-import platform
-import subprocess
-from time import sleep
 
-from PySide6.QtWidgets import (
-    QApplication,
-    QMainWindow,
-    QWidget,
-    QVBoxLayout,
-    QHBoxLayout,
-    QLabel,
-    QPushButton,
-    QDialog,
-    QRadioButton,
-    QButtonGroup,
-    QSpinBox,
-    QStackedWidget,
-)
-from PySide6.QtGui import QPixmap
-from PySide6.QtCore import (
-    Qt,
-    QPropertyAnimation,
-    QPoint,
-    QEasingCurve,
-    QTimer,
-    QSequentialAnimationGroup,
-    QAbstractAnimation,
-    QRect,
-    QUrl,
-)
-from PySide6.QtMultimedia import QSoundEffect
+pygame.init()
+pygame.mixer.init()
+
+# ensure mixer volume defaults
+pygame.mixer.set_num_channels(8)
+
+# Constants
+WIDTH = 1000
+HEIGHT = 900
+FPS = 60
+
+# Colors
+GREEN = (0, 100, 0)
+BLACK = (0, 0, 0)
+WHITE = (255, 255, 255)
+YELLOW = (255, 255, 0)
+
+# Load assets
+base_dir = os.path.dirname(os.path.abspath(__file__))
+assets = os.path.join(base_dir, "bj_assets")
+
+# Card images: Dictionary mapping (suit, rank) to loaded images
+card_images = {}
+suits = ['clubs', 'diamonds', 'hearts', 'spades']
+ranks = ['a'] + [f"{i:02d}" for i in range(2, 11)] + ['j', 'q', 'k']
+
+for suit in suits:
+    for rank in ranks:
+        path = os.path.join(assets, f"card_{suit}_{rank}.png")
+        if os.path.exists(path):
+            img = pygame.image.load(path)
+            img = pygame.transform.scale(img, (100, 150))
+            card_images[(suit, rank)] = img
+
+# Back images for hidden cards
+card_back_red = pygame.image.load(os.path.join(assets, "card_back_red.png"))
+card_back_red = pygame.transform.scale(card_back_red, (100, 150))
+card_back_blue = pygame.image.load(os.path.join(assets, "card_back_blue.png"))
+card_back_blue = pygame.transform.scale(card_back_blue, (100, 150))
+
+# Sounds: Prefer WAV but fallback to MP3 if available
+wav = lambda name: os.path.join(assets, name + ".wav")
+mp3 = lambda name: os.path.join(assets, name + ".mp3")
+
+def load_sound(name):
+    """
+    Load a sound file, preferring WAV over MP3.
+
+    Args:
+        name (str): Base name of the sound file (without extension).
+
+    Returns:
+        pygame.mixer.Sound or None: Loaded sound object or None if not found.
+    """
+    # try wav first then mp3
+    path = wav(name) if os.path.exists(wav(name)) else (mp3(name) if os.path.exists(mp3(name)) else None)
+    if path:
+        try:
+            return pygame.mixer.Sound(path)
+        except Exception:
+            return None
+    return None
 
 
-# ----------------------------------------------------------------------
-# Utilities: sound playback with graceful fallback (QSoundEffect -> system)
-# ----------------------------------------------------------------------
-def play_wav_with_system(path):
-    """Try platform-native playback for wav files if QSoundEffect isn't available."""
-    if not os.path.exists(path):
-        return
-    plat = platform.system()
-    try:
-        if plat == "Windows":
-            from pygame import mixer
-            mixer.init()
-            mixer.music.load(path)
-            mixer.music.play()
-            return
-        if plat == "Darwin":
-            # macOS
-            subprocess.Popen(["afplay", path])
-            return
-        # Linux: try aplay or paplay
-        for cmd in (["paplay", path], ["aplay", path]):
+def play_sound(snd, label):
+    """
+    Play a sound effect if available.
+
+    Args:
+        snd (pygame.mixer.Sound or None): Sound to play.
+        label (str): Label for debugging output.
+    """
+    if snd:
+        try:
+            snd.play()
+            print(f"played sound: {label}")
+        except Exception as e:
+            print(f"error playing sound {label}: {e}")
+
+
+draw_sound = load_sound("card_drawn")
+flip_sound = load_sound("card_flipped")
+shuffle_sound = load_sound("card_shuffle")
+
+# set reasonable volumes
+if draw_sound:
+    draw_sound.set_volume(0.6)
+if flip_sound:
+    flip_sound.set_volume(0.6)
+if shuffle_sound:
+    shuffle_sound.set_volume(0.6)
+
+# debug print load results
+print("sounds loaded:",
+      "draw=" + str(bool(draw_sound)),
+      "flip=" + str(bool(flip_sound)),
+      "shuffle=" + str(bool(shuffle_sound)))
+
+class Button:
+    """
+    Represents an interactive button with hover, selection, and enabled states.
+
+    Attributes:
+        rect (pygame.Rect): The button's rectangular area.
+        text (str): The text displayed on the button.
+        font (pygame.font.Font): Font used for rendering text.
+        color (tuple): Default color of the button.
+        hover_color (tuple): Color when mouse hovers over the button.
+        selected_color (tuple): Color when the button is selected.
+        hovered (bool): Whether the mouse is currently hovering.
+        selected (bool): Whether the button is selected.
+        enabled (bool): Whether the button is interactive.
+    """
+
+    def __init__(self, x, y, w, h, text, font, color=WHITE, hover_color=YELLOW, selected_color=(150,150,150)):
+        """
+        Initialize a Button instance.
+
+        Args:
+            x (int): X-coordinate of the top-left corner.
+            y (int): Y-coordinate of the top-left corner.
+            w (int): Width of the button.
+            h (int): Height of the button.
+            text (str): Text to display on the button.
+            font (pygame.font.Font): Font for the text.
+            color (tuple): Default color (RGB).
+            hover_color (tuple): Hover color (RGB).
+            selected_color (tuple): Selected color (RGB).
+        """
+        self.rect = pygame.Rect(x, y, w, h)
+        self.text = text
+        self.font = font
+        self.color = color
+        self.hover_color = hover_color
+        self.selected_color = selected_color
+        self.hovered = False
+        self.selected = False
+        self.enabled = True  # new flag to disable interaction
+
+    def draw(self, screen):
+        """
+        Draw the button on the screen.
+
+        Args:
+            screen (pygame.Surface): The surface to draw on.
+        """
+        if not self.enabled:
+            color = (200, 200, 200)
+        elif self.selected:
+            color = self.selected_color
+        elif self.hovered:
+            color = self.hover_color
+        else:
+            color = self.color
+        pygame.draw.rect(screen, color, self.rect)
+        text_surf = self.font.render(self.text, True, BLACK)
+        text_rect = text_surf.get_rect(center=self.rect.center)
+        screen.blit(text_surf, text_rect)
+
+    def update(self, mouse_pos):
+        """
+        Update the button's hover state based on mouse position.
+
+        Args:
+            mouse_pos (tuple): Current mouse position (x, y).
+        """
+        if self.enabled:
+            self.hovered = self.rect.collidepoint(mouse_pos)
+        else:
+            self.hovered = False
+
+    def click(self, pos):
+        """
+        Check if the button was clicked at the given position.
+
+        Args:
+            pos (tuple): Position to check (x, y).
+
+        Returns:
+            bool: True if clicked and enabled, False otherwise.
+        """
+        return self.enabled and self.rect.collidepoint(pos)
+
+
+class TextInput:
+    """
+    Represents a numeric text input field with up/down arrow buttons.
+
+    Attributes:
+        rect (pygame.Rect): The input field's rectangular area.
+        font (pygame.font.Font): Font used for rendering text.
+        text (str): Current text in the input.
+        active (bool): Whether the input is currently active for editing.
+        min_val (int): Minimum allowed value.
+        max_val (int): Maximum allowed value.
+        up_btn (Button): Button to increase the value.
+        down_btn (Button): Button to decrease the value.
+    """
+
+    def __init__(self, x, y, w, h, font, initial="16", min_val=4, max_val=21):
+        """
+        Initialize a TextInput instance.
+
+        Args:
+            x (int): X-coordinate of the top-left corner.
+            y (int): Y-coordinate of the top-left corner.
+            w (int): Width of the input field.
+            h (int): Height of the input field.
+            font (pygame.font.Font): Font for the text.
+            initial (str): Initial text value.
+            min_val (int): Minimum value constraint.
+            max_val (int): Maximum value constraint.
+        """
+        self.rect = pygame.Rect(x, y, w, h)
+        self.font = font
+        self.text = initial
+        self.active = False
+        self.min_val = min_val
+        self.max_val = max_val
+        self.up_btn = Button(x + w + 10, y, 30, h // 2, "+", font, WHITE, YELLOW)
+        self.down_btn = Button(x + w + 10, y + h // 2, 30, h // 2, "-", font, WHITE, YELLOW)
+
+    def draw(self, screen):
+        """
+        Draw the text input and buttons on the screen.
+
+        Args:
+            screen (pygame.Surface): The surface to draw on.
+        """
+        color = WHITE if self.active else (200, 200, 200)
+        pygame.draw.rect(screen, color, self.rect)
+        text_surf = self.font.render(self.text, True, BLACK)
+        text_rect = text_surf.get_rect(center=self.rect.center)
+        screen.blit(text_surf, text_rect)
+        self.up_btn.draw(screen)
+        self.down_btn.draw(screen)
+
+    def update(self, mouse_pos):
+        """
+        Update the buttons' hover states.
+
+        Args:
+            mouse_pos (tuple): Current mouse position (x, y).
+        """
+        self.up_btn.update(mouse_pos)
+        self.down_btn.update(mouse_pos)
+
+    def handle_event(self, event):
+        """
+        Handle input events for the text input.
+
+        Args:
+            event (pygame.event.Event): The event to handle.
+        """
+        if event.type == pygame.MOUSEBUTTONDOWN:
+            if self.rect.collidepoint(event.pos):
+                self.active = True
+            else:
+                self.active = False
+            if self.up_btn.click(event.pos):
+                val = int(self.text) + 1
+                self.text = str(min(val, self.max_val))
+            elif self.down_btn.click(event.pos):
+                val = int(self.text) - 1
+                self.text = str(max(val, self.min_val))
+        if event.type == pygame.KEYDOWN and self.active:
+            if event.key == pygame.K_RETURN:
+                self.active = False
+            elif event.key == pygame.K_BACKSPACE:
+                self.text = self.text[:-1]
+            else:
+                self.text += event.unicode
             try:
-                subprocess.Popen(cmd)
-                return
-            except Exception:
-                continue
-    except Exception:
-        pass
+                val = int(self.text)
+                val = max(self.min_val, min(val, self.max_val))
+                self.text = str(val)
+            except ValueError:
+                self.text = "16"
 
+    def get_value(self):
+        """
+        Get the current numeric value of the input.
 
-def try_create_qsound(path):
-    """Return QSoundEffect instance if possible and file exists, else None."""
-    if not os.path.exists(path):
-        return None
-    try:
-        s = QSoundEffect()
-        s.setSource(QUrl.fromLocalFile(path))
-        s.setVolume(0.6)
-        return s
-    except Exception:
-        return None
+        Returns:
+            int: The parsed integer value, or 16 if invalid.
+        """
+        try:
+            return int(self.text)
+        except ValueError:
+            return 16
 
+class Card:
+    """
+    Represents a playing card with animation capabilities for movement and flipping.
 
-# ----------------------------------------------------------------------
-# card image loading (bj_assets)
-# ----------------------------------------------------------------------
-def get_card_pixmap_static(num=None, suit_idx=None, is_back=False):
-    base_dir = os.path.dirname(os.path.abspath(__file__))
-    suits = {1: "clubs", 2: "diamonds", 3: "hearts", 4: "spades"}
-    ranks = {1: "a", 11: "j", 12: "q", 13: "k"}
+    Attributes:
+        num (int): Card rank (1-13, where 1=Ace, 11=Jack, etc.).
+        suit_idx (int): Suit index (1-4: clubs, diamonds, hearts, spades).
+        hidden (bool): Whether the card is face-down.
+        flipping (bool): Whether the card is currently flipping.
+        flip_progress (float): Progress of the flip animation (0.0 to 1.0).
+        pos (list): Current position [x, y].
+        target_pos (list): Target position for animation [x, y].
+        animating (bool): Whether the card is currently animating movement.
+        anim_progress (float): Progress of the movement animation (0.0 to 1.0).
+        start_pos (list): Starting position for animation [x, y].
+        duration (float): Duration of the current animation in seconds.
+        easing (str or None): Easing function for animation ('in_cubic', 'out_cubic', etc.).
+        on_finish (callable or None): Callback function to call when animation finishes.
+        image (pygame.Surface): Current image of the card.
+        rect (pygame.Rect): Rectangular area for drawing.
+    """
 
-    if is_back:
-        filename = "card_back.png"
-    else:
-        rank_str = ranks.get(num, f"{num:02d}")
-        filename = f"card_{suits[suit_idx]}_{rank_str}.png"
+    def __init__(self, num, suit_idx, hidden=False):
+        """
+        Initialize a Card instance.
 
-    path = os.path.join(base_dir, "bj_assets", filename)
-    if not os.path.exists(path):
-        return QPixmap()
+        Args:
+            num (int): Card rank (1-13).
+            suit_idx (int): Suit index (1-4).
+            hidden (bool): Whether to start face-down.
+        """
+        self.num = num
+        self.suit_idx = suit_idx
+        self.hidden = hidden
+        self.flipping = False
+        self.flip_progress = 0.0
+        self.pos = [0, 0]
+        self.target_pos = [0, 0]
+        self.animating = False
+        self.anim_progress = 0.0
+        self.start_pos = [0, 0]
+        self.duration = 0.0
+        self.easing = None
+        self.image = self.get_image()
+        self.rect = self.image.get_rect()
 
-    return QPixmap(path).scaled(100, 150, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+    def get_image(self):
+        """
+        Get the appropriate image for the card based on hidden state.
 
+        Returns:
+            pygame.Surface: The card's image.
+        """
+        if self.hidden:
+            return card_back_red if self.suit_idx in [2, 3] else card_back_blue
+        suit = suits[self.suit_idx - 1]
+        rank = ranks[self.num - 1]
+        return card_images.get((suit, rank), pygame.Surface((100, 150)))
 
-# ----------------------------------------------------------------------
-# Card widget with flip animation
-# ----------------------------------------------------------------------
-class CardWidget(QLabel):
-    def __init__(self, card_data, is_hidden=False, parent=None):
-        super().__init__(parent)
-        self.card_data = card_data  # (num, suit_idx)
-        self.is_hidden = is_hidden
-        # Always set pixmap (back if hidden)
-        self.setPixmap(get_card_pixmap_static(*card_data, is_back=is_hidden))
-        self.setFixedSize(100, 150)
-        self.show()
+    def draw(self, screen):
+        """
+        Draw the card on the screen, handling flip animation with scaling.
 
-    def reveal(self):
-        if not self.is_hidden:
+        Args:
+            screen (pygame.Surface): The surface to draw on.
+        """
+        if self.flipping:
+            scale_x = abs(self.flip_progress - 0.5) * 2
+            # grow factor peaks at mid-flip and returns to 1
+            grow = 1 + (0.5 - abs(self.flip_progress - 0.5)) * 0.5
+            width = int(100 * scale_x * grow)
+            height = int(150 * grow)
+            if width > 0 and height > 0:
+                img = pygame.transform.scale(self.image, (width, height))
+                rect = img.get_rect(center=self.rect.center)
+                screen.blit(img, rect)
+            if self.flip_progress > 0.5 and self.hidden:
+                self.hidden = False
+                self.image = self.get_image()
+        else:
+            screen.blit(self.image, self.rect)
+
+    def update(self, dt):
+        """
+        Update the card's animation state.
+
+        Args:
+            dt (float): Time delta since last update in seconds.
+        """
+        if self.animating:
+            self.anim_progress += dt / self.duration
+            if self.anim_progress >= 1.0:
+                self.anim_progress = 1.0
+                self.animating = False
+                self.pos = self.target_pos[:]
+                if self.on_finish:
+                    self.on_finish()
+            else:
+                eased_progress = self.anim_progress
+                if self.easing == 'in_cubic':
+                    eased_progress = self.anim_progress ** 3
+                for i in range(2):
+                    self.pos[i] = self.start_pos[i] + (self.target_pos[i] - self.start_pos[i]) * eased_progress
+            self.rect.center = self.pos
+        if self.flipping:
+            self.flip_progress += dt / 0.5
+            if self.flip_progress >= 1.0:
+                self.flipping = False
+                self.flip_progress = 0.0
+                self.hidden = False
+                self.image = self.get_image()
+                if self.on_finish:
+                    self.on_finish()
+
+    def move_to(self, pos, duration=0.5, easing=None, on_finish=None):
+        """
+        Animate the card to a new position.
+
+        Args:
+            pos (tuple or list): Target position (x, y).
+            duration (float): Animation duration in seconds.
+            easing (str or None): Easing type.
+            on_finish (callable or None): Callback when animation completes.
+        """
+        self.start_pos = self.pos[:]
+        self.target_pos = list(pos)
+        self.anim_progress = 0.0
+        self.duration = duration
+        self.easing = easing
+        self.on_finish = on_finish
+        self.animating = True
+
+    def flip(self, on_finish=None):
+        """
+        Start the flip animation to reveal the card.
+
+        Args:
+            on_finish (callable or None): Callback when flip completes.
+        """
+        if not self.hidden:
+            if on_finish:
+                on_finish()
             return
+        self.flipping = True
+        self.flip_progress = 0.0
+        self.on_finish = on_finish
+        play_sound(flip_sound, "flip")
 
-        self.is_hidden = False
+class Game:
+    """
+    Main game controller for the Blackjack application.
 
-        parent = self.parent()
-        if parent is None:
-            self.setPixmap(get_card_pixmap_static(*self.card_data))
-            return
+    Manages the overall game state, UI elements, animations, and game logic.
+    Handles different game phases: intro animation, rules selection, gameplay, and end screen.
 
-        original_rect = self.geometry()
-        center = original_rect.center()
-
-        narrow_rect = QRect(original_rect)
-        narrow_rect.setWidth(10)
-        narrow_rect.moveCenter(center)
-
-        shrink_anim = QPropertyAnimation(self, b"geometry")
-        shrink_anim.setDuration(150)
-        shrink_anim.setStartValue(original_rect)
-        shrink_anim.setEndValue(narrow_rect)
-        shrink_anim.setEasingCurve(QEasingCurve.InCubic)
-
-        expand_anim = QPropertyAnimation(self, b"geometry")
-        expand_anim.setDuration(150)
-        expand_anim.setStartValue(narrow_rect)
-        expand_anim.setEndValue(original_rect)
-        expand_anim.setEasingCurve(QEasingCurve.OutCubic)
-
-        def swap_pixmap():
-            self.setPixmap(get_card_pixmap_static(*self.card_data))
-
-        shrink_anim.finished.connect(swap_pixmap)
-
-        group = QSequentialAnimationGroup(self)
-        group.addAnimation(shrink_anim)
-        group.addAnimation(expand_anim)
-        group.start(QAbstractAnimation.DeleteWhenStopped)
-
-
-# ----------------------------------------------------------------------
-# Intro animation screen (plays before rules)
-# ----------------------------------------------------------------------
-class IntroScreen(QWidget):
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.setStyleSheet("background-color: #004000;")
-        self.cards = []
-
-    def start_animation(self, duration_out=2000, duration_in=2000, on_finished=None, play_shuffle=None):
-        self.clear_cards()
-        area_w = self.width() if self.width() > 0 else 800
-        area_h = self.height() if self.height() > 0 else 400
-        center_x = area_w // 2
-        center_y = area_h // 2
-
-        # create many face-down cards centered
-        for _ in range(40):
-            c = CardWidget((1, 1), is_hidden=True, parent=self)
-            c.move(center_x - c.width() // 2, center_y - c.height() // 2)
-            c.show()
-            self.cards.append(c)
-
-        if play_shuffle:
-            play_shuffle()
-
-        # animate them flying out in random directions over duration_out
-        for c in self.cards:
-            dx = random.randint(-area_w, area_w)
-            dy = random.randint(-area_h, area_h)
-            end_x = max(0, min(area_w - c.width(), center_x + dx))
-            end_y = max(0, min(area_h - c.height(), center_y + dy))
-
-            anim = QPropertyAnimation(c, b"pos", self)
-            anim.setDuration(duration_out)
-            anim.setStartValue(c.pos())
-            anim.setEndValue(QPoint(end_x, end_y))
-            anim.setEasingCurve(QEasingCurve.OutCubic)
-            anim.start(QAbstractAnimation.DeleteWhenStopped)
-
-        # after duration_out, animate them back to center
-        def gather_back():
-            for c in self.cards:
-                anim = QPropertyAnimation(c, b"pos", self)
-                anim.setDuration(duration_in)
-                anim.setStartValue(c.pos())
-                anim.setEndValue(QPoint(center_x - c.width() // 2, center_y - c.height() // 2))
-                anim.setEasingCurve(QEasingCurve.InOutCubic)
-                anim.start(QAbstractAnimation.DeleteWhenStopped)
-
-            QTimer.singleShot(duration_in, lambda: on_finished() if on_finished else None)
-
-        QTimer.singleShot(duration_out, gather_back)
-
-    def clear_cards(self):
-        for c in self.cards:
-            c.deleteLater()
-        self.cards = []
-
-
-# ----------------------------------------------------------------------
-# main blackjack GUI
-# ----------------------------------------------------------------------
-class BlackjackGUI(QMainWindow):
-    MODE_AUTO_START = 0
-    MODE_WITH_PLAYER = 1
-    MODE_AUTO_END = 2
+    Attributes:
+        screen (pygame.Surface): The main display surface.
+        clock (pygame.time.Clock): Clock for managing frame rate.
+        state (str): Current game state ('intro', 'rules', 'game', 'end').
+        Various UI elements: buttons, fonts, cards, etc.
+        dealer_mode (int): Dealer behavior mode (0=At Start, 1=With Player, 2=At End).
+        dealer_threshold (int): Score threshold for dealer to stop hitting.
+        And many more for managing animations, timers, and game data.
+    """
 
     def __init__(self):
-        super().__init__()
-        self.setWindowTitle("Blackjack")
-        self.setFixedSize(760, 760)
-        self.setStyleSheet("background-color: #006400;")
-
+        """
+        Initialize the Game instance, setting up display, fonts, UI elements, and initial state.
+        """
+        self.screen = pygame.display.set_mode((WIDTH, HEIGHT))
+        pygame.display.set_caption("Blackjack")
+        self.clock = pygame.time.Clock()
+        self.state = 'intro'
+        self.intro_phase = 0
+        self.intro_timer = 0.0
+        self.font_large = pygame.font.SysFont(None, 48)
+        self.font_medium = pygame.font.SysFont(None, 36)
+        self.font_small = pygame.font.SysFont(None, 24)
+        self.dealer_mode = 1
+        self.dealer_threshold = 16
+        # clear any pending timers so menu transition won't fire after start
+        self.reset_timers()
         self.used_cards = set()
         self.player_cards = []
         self.dealer_cards = []
-        self.player_widgets = []
-        self.dealer_widgets = []
-
-        self.dealer_has_stood = False
-        self.dealer_stand_label = None
+        self.deck_pos = (WIDTH // 2, HEIGHT // 2)
+        self.intro_cards = []
+        self.intro_phase = 0      # 0=fly out,1=gather back
+        self.intro_timer = 0.0
+        self.result_text = ""
+        self.totals_text = ""
+        button_width = 100
+        spacing = 50
+        total_width = button_width * 2 + spacing
+        start_x = WIDTH // 2 - total_width // 2
+        # hit/stand below player's cards (closer to bottom)
+        self.hit_btn = Button(start_x, HEIGHT - 60, button_width, 40, "Hit", self.font_medium)
+        self.stand_btn = Button(start_x + button_width + spacing, HEIGHT - 60, button_width, 40, "Stand", self.font_medium)
+        button_width = 100
+        spacing = 50
+        total_width = button_width * 2 + spacing
+        start_x = WIDTH // 2 - total_width // 2
+        self.start_btn = Button(start_x, HEIGHT - 50, button_width, 40, "Start", self.font_medium)
+        self.quit_btn = Button(start_x + button_width + spacing, HEIGHT - 50, button_width, 40, "Quit", self.font_medium)
+        button_width = 150
+        spacing = 25
+        total_width = button_width * 3 + spacing * 2
+        start_x = WIDTH // 2 - total_width // 2
+        self.mode_btns = [
+            Button(start_x, 200, button_width, 40, "At Start", self.font_small),
+            Button(start_x + button_width + spacing, 200, button_width, 40, "With Player", self.font_small),
+            Button(start_x + 2 * (button_width + spacing), 200, button_width, 40, "At End", self.font_small)
+        ]
+        # mark initial selection
+        for j, b in enumerate(self.mode_btns):
+            b.selected = (j == self.dealer_mode)
+        self.threshold_input = TextInput(WIDTH // 2 - 50, 300, 100, 40, self.font_small)
+        button_width = 120
+        spacing = 20
+        total_width = button_width * 2 + spacing
+        start_x = WIDTH // 2 - total_width // 2
+        y = HEIGHT // 2 + 80  # placed below the result area
+        self.play_again_btns = [
+            Button(start_x, y, button_width, 40, "Play Again", self.font_small),
+            Button(start_x + button_width + spacing, y, button_width, 40, "Menu", self.font_small)
+        ]
+        self.timer_event = 0
+        self.dealing = False
+        self.deal_index = 0
+        self.deal_cards = []
+        self.flipping = False
+        self.flip_index = 0
+        self.flip_cards = []
+        self.player_stood = False
         self._dealer_playing = False
-        self.intro_group = None
+        self.pending_dealer_turn = False
+        self.dealer_stood = False  # tracks when dealer decides to stand during "with player" mode
+        # durations for intro animation will be computed when starting
+        self.intro_out = 2.0
+        self.intro_back = 2.0
 
-        self.dealer_mode = self.MODE_WITH_PLAYER
-        self.dealer_stand_threshold = 16
-
-        self.pile_widget = None
-        self.shuffle_widgets = []
-
-        # audio: prefer QSoundEffect for wav; fallback to system playback
-        self.snd_draw = None
-        self.snd_flip = None
-        self.snd_shuffle = None
-        self.init_audio_players()
-
-        self.stack = QStackedWidget()
-        self.setCentralWidget(self.stack)
-
-        self.intro_screen = IntroScreen()
-        self.rules_widget = QWidget()
-        self.game_widget = QWidget()
-        self.stack.addWidget(self.intro_screen)
-        self.stack.addWidget(self.rules_widget)
-        self.stack.addWidget(self.game_widget)
-
-        self.init_rules_ui()
-        self.init_game_ui()
-
-        # start with intro animation screen
-        QTimer.singleShot(100, self.play_intro_then_rules)
-
-    # ------------------------------------------------------------------
-    # audio initialization with graceful fallback
-    # ------------------------------------------------------------------
-    def init_audio_players(self):
-        base_dir = os.path.dirname(os.path.abspath(__file__))
-        assets = os.path.join(base_dir, "bj_assets")
-
-        # prefer WAV files for QSoundEffect
-        self.snd_draw = try_create_qsound(os.path.join(assets, "card_drawn.wav"))
-        self.snd_flip = try_create_qsound(os.path.join(assets, "card_flipped.wav"))
-        self.snd_shuffle = try_create_qsound(os.path.join(assets, "card_shuffle.wav"))
-
-        # if wav not present, keep paths for system fallback (mp3 or wav)
-        self._draw_path = (
-            os.path.join(assets, "card_drawn.wav")
-            if os.path.exists(os.path.join(assets, "card_drawn.wav"))
-            else os.path.join(assets, "card_drawn.mp3")
-        )
-        self._flip_path = (
-            os.path.join(assets, "card_flipped.wav")
-            if os.path.exists(os.path.join(assets, "card_flipped.wav"))
-            else os.path.join(assets, "card_flipped.mp3")
-        )
-        self._shuffle_path = (
-            os.path.join(assets, "card_shuffle.wav")
-            if os.path.exists(os.path.join(assets, "card_shuffle.wav"))
-            else os.path.join(assets, "card_shuffle.mp3")
-        )
-
-    def play_draw_sound(self):
-        if isinstance(self.snd_draw, QSoundEffect):
-            try:
-                self.snd_draw.play()
-                return
-            except Exception:
-                pass
-        play_wav_with_system(self._draw_path)
-
-    def play_flip_sound(self):
-        if isinstance(self.snd_flip, QSoundEffect):
-            try:
-                self.snd_flip.play()
-                return
-            except Exception:
-                pass
-        play_wav_with_system(self._flip_path)
-
-    def play_shuffle_sound(self):
-        if isinstance(self.snd_shuffle, QSoundEffect):
-            try:
-                self.snd_shuffle.play()
-                return
-            except Exception:
-                pass
-        play_wav_with_system(self._shuffle_path)
-
-    # ------------------------------------------------------------------
-    # Intro -> Rules flow
-    # ------------------------------------------------------------------
-    def play_intro_then_rules(self):
-        self.stack.setCurrentWidget(self.intro_screen)
-
-        def on_intro_finished():
-            self.show_rules()
-
-        # start intro animation: 2s out, 2s back
-        self.intro_screen.start_animation(
-            duration_out=2000,
-            duration_in=2000,
-            on_finished=on_intro_finished,
-            play_shuffle=self.play_shuffle_sound,
-        )
-
-    # ------------------------------------------------------------------
-    # rules screen
-    # ------------------------------------------------------------------
-    def init_rules_ui(self):
-        layout = QVBoxLayout(self.rules_widget)
-
-        title = QLabel("Choose Rules")
-        title.setAlignment(Qt.AlignCenter)
-        title.setStyleSheet("color: white; font-size: 24px; font-weight: bold;")
-        layout.addWidget(title)
-
-        r1_label = QLabel("When the dealer plays:")
-        r1_label.setStyleSheet("color: white; font-size: 18px;")
-        layout.addWidget(r1_label)
-
-        self.mode_group = QButtonGroup(self.rules_widget)
-
-        rb_start = QRadioButton("auto-play at the start")
-        rb_with = QRadioButton("play with the player")
-        rb_end = QRadioButton("auto-play at the end")
-
-        rb_with.setChecked(True)
-
-        for rb in (rb_start, rb_with, rb_end):
-            rb.setStyleSheet("color: white; font-size: 16px;")
-            layout.addWidget(rb)
-
-        self.mode_group.addButton(rb_start, self.MODE_AUTO_START)
-        self.mode_group.addButton(rb_with, self.MODE_WITH_PLAYER)
-        self.mode_group.addButton(rb_end, self.MODE_AUTO_END)
-
-        r2_label = QLabel("Dealer must stand at or above:")
-        r2_label.setStyleSheet("color: white; font-size: 18px;")
-        layout.addWidget(r2_label)
-
-        h = QHBoxLayout()
-        self.threshold_spin = QSpinBox()
-        self.threshold_spin.setRange(12, 21)
-        self.threshold_spin.setValue(16)
-        self.threshold_spin.setStyleSheet("font-size: 16px;")
-        h.addWidget(self.threshold_spin)
-
-        lbl_pts = QLabel("points")
-        lbl_pts.setStyleSheet("color: white; font-size: 16px;")
-        h.addWidget(lbl_pts)
-        h.addStretch()
-        layout.addLayout(h)
-
-        layout.addStretch()
-
-        start_btn = QPushButton("Start Game")
-        start_btn.setStyleSheet("font-size: 18px;")
-        start_btn.clicked.connect(self.apply_rules_and_start)
-        layout.addWidget(start_btn)
-
-    def apply_rules_and_start(self):
-        self.dealer_mode = self.mode_group.checkedId()
-        self.dealer_stand_threshold = self.threshold_spin.value()
-        self.show_game()
-        # create pile between dealer and player before dealing
-        QTimer.singleShot(100, self.create_pile_and_start)
-
-    def show_rules(self):
-        self.stack.setCurrentWidget(self.rules_widget)
-
-    def show_game(self):
-        self.stack.setCurrentWidget(self.game_widget)
-
-    # ------------------------------------------------------------------
-    # game UI
-    # ------------------------------------------------------------------
-    def init_game_ui(self):
-        self.game_layout = QVBoxLayout(self.game_widget)
-
-        # Dealer row
-        dealer_label = QLabel("Dealer's hand:")
-        dealer_label.setStyleSheet("color: white; font-size: 18px;")
-        self.game_layout.addWidget(dealer_label)
-
-        self.dealer_container = QWidget()
-        self.dealer_container.setMinimumHeight(160)
-        self.dealer_container.setLayout(None)
-        self.game_layout.addWidget(self.dealer_container)
-
-        # deck / pile area (between dealer and player)
-        self.deck_area = QWidget()
-        self.deck_area.setMinimumHeight(140)
-        self.deck_area.setLayout(None)
-        self.game_layout.addWidget(self.deck_area)
-
-        # Player row
-        player_label = QLabel("Your hand:")
-        player_label.setStyleSheet("color: white; font-size: 18px;")
-        self.game_layout.addWidget(player_label)
-
-        self.player_container = QWidget()
-        self.player_container.setMinimumHeight(160)
-        self.player_container.setLayout(None)
-        self.game_layout.addWidget(self.player_container)
-
-        self.result_label = QLabel("")
-        self.result_label.setAlignment(Qt.AlignCenter)
-        self.result_label.setStyleSheet("color: yellow; font-weight: bold; font-size: 32px;")
-        self.game_layout.addWidget(self.result_label)
-
-        self.totals_label = QLabel("")
-        self.totals_label.setAlignment(Qt.AlignCenter)
-        self.totals_label.setStyleSheet("color: white; font-size: 22px;")
-        self.game_layout.addWidget(self.totals_label)
-
-        self.btn_layout = QHBoxLayout()
-        self.hit_btn = QPushButton("Hit")
-        self.stand_btn = QPushButton("Stand")
-        self.hit_btn.clicked.connect(self.player_hit_logic)
-        self.stand_btn.clicked.connect(self.dealer_turn_logic)
-        self.btn_layout.addWidget(self.hit_btn)
-        self.btn_layout.addWidget(self.stand_btn)
-        self.game_layout.addLayout(self.btn_layout)
-
-    # ------------------------------------------------------------------
-    # core game helpers
-    # ------------------------------------------------------------------
     def draw_card(self):
         while True:
             card = (random.randint(1, 13), random.randint(1, 4))
@@ -468,366 +567,456 @@ class BlackjackGUI(QMainWindow):
                 return card
 
     def calculate_score(self, cards):
+        """
+        Calculate the Blackjack score for a list of cards, handling Aces optimally.
+
+        Args:
+            cards (list[Card]): List of cards to score.
+
+        Returns:
+            int: The calculated score.
+        """
         if not cards:
             return 0
-        ranks = [c[0] for c in cards]
-        total = sum(min(r, 10) for r in ranks)
-        ace_count = ranks.count(1)
-        while ace_count > 0 and total + 10 <= 21:
+        nums = [c.num for c in cards]
+        total = sum(min(n, 10) for n in nums)
+        aces = nums.count(1)
+        while aces > 0 and total + 10 <= 21:
             total += 10
-            ace_count -= 1
+            aces -= 1
         return total
 
-    def player_has_blackjack(self):
-        return len(self.player_cards) == 2 and self.calculate_score(self.player_cards) == 21
+    def reset_timers(self):
+        """
+        Clear all pending timers to prevent unwanted state transitions.
+        """
+        # disable all user timers and clear state
+        for i in range(1, 5):
+            pygame.time.set_timer(pygame.USEREVENT + i, 0)
+        self.timer_event = 0
 
-    # ------------------------------------------------------------------
-    # create pile widget (single back) centered in deck_area
-    # ------------------------------------------------------------------
-    def create_pile_and_start(self):
-        if self.pile_widget is not None:
-            self.pile_widget.deleteLater()
-            self.pile_widget = None
+    def run(self):
+        """
+        Main game loop. Handles events, updates state, and renders the screen.
+        """
+        running = True
+        while running:
+            try:
+                dt = self.clock.tick(FPS) / 1000.0
+                for event in pygame.event.get():
+                    if event.type == pygame.QUIT:
+                        running = False
+                    elif event.type == pygame.USEREVENT + self.timer_event:
+                        self.handle_timer()
+                    else:
+                        self.handle_event(event)
+                self.update(dt)
+                self.draw()
+                pygame.display.flip()
+            except Exception as e:
+                print("Exception in main loop:", e)
+                import traceback
+                traceback.print_exc()
+                running = False
+        pygame.quit()
 
-        area = self.deck_area
-        w = area.width() if area.width() > 0 else self.width()
-        h = area.height() if area.height() > 0 else 140
-        self.pile_widget = CardWidget((1, 1), is_hidden=True, parent=area)
-        px = w // 2 - self.pile_widget.width() // 2
-        py = h // 2 - self.pile_widget.height() // 2
-        self.pile_widget.move(px, py)
-        self.pile_widget.show()
+    def handle_event(self, event):
+        """
+        Handle user input events based on current game state.
 
-        QTimer.singleShot(100, self.start_game)
+        Args:
+            event (pygame.event.Event): The event to handle.
+        """
+        mouse_pos = pygame.mouse.get_pos()
+        if self.state == 'rules':
+            self.threshold_input.handle_event(event)
+            if event.type == pygame.MOUSEBUTTONDOWN:
+                for i, btn in enumerate(self.mode_btns):
+                    if btn.click(event.pos):
+                        self.dealer_mode = i
+                if self.start_btn.click(event.pos):
+                    self.dealer_threshold = self.threshold_input.get_value()
+                    self.state = 'game'
+                    self.start_game()
+                elif self.quit_btn.click(event.pos):
+                    pygame.event.post(pygame.event.Event(pygame.QUIT))
+        elif self.state == 'game':
+            if event.type == pygame.MOUSEBUTTONDOWN:
+                if self.hit_btn.enabled and self.hit_btn.click(event.pos) and not self.player_stood and not self._dealer_playing:
+                    self.player_hit()
+                elif self.stand_btn.enabled and self.stand_btn.click(event.pos) and not self.player_stood and not self._dealer_playing:
+                    self.player_stood = True
+                    self.dealer_turn()
+        elif self.state == 'end':
+            if event.type == pygame.MOUSEBUTTONDOWN:
+                if self.play_again_btns[0].click(event.pos):
+                    self.start_game()
+                elif self.play_again_btns[1].click(event.pos):
+                    self.state = 'rules'
 
-    # ------------------------------------------------------------------
-    # game start / reset
-    # ------------------------------------------------------------------
+    def update(self, dt):
+        """
+        Update game state and animations.
+
+        Args:
+            dt (float): Time delta since last update.
+        """
+        mouse_pos = pygame.mouse.get_pos()
+        if self.state == 'intro':
+            # manage timing for intro phases
+            self.intro_timer += dt
+            if self.intro_phase == 0 and self.intro_timer >= self.intro_out:
+                # start gathering back
+                for card in self.intro_cards:
+                    card.move_to(self.deck_pos, self.intro_back, 'in_out_cubic')
+                self.intro_phase = 1
+                self.intro_timer = 0.0
+            elif self.intro_phase == 1 and self.intro_timer >= self.intro_back:
+                self.state = 'rules'
+        elif self.state == 'rules':
+            self.threshold_input.update(mouse_pos)
+            for btn in self.mode_btns:
+                btn.update(mouse_pos)
+            self.start_btn.update(mouse_pos)
+            self.quit_btn.update(mouse_pos)
+        elif self.state == 'game':
+            self.hit_btn.update(mouse_pos)
+            self.stand_btn.update(mouse_pos)
+            for card in self.player_cards + self.dealer_cards:
+                card.update(dt)
+        elif self.state == 'end':
+            for btn in self.play_again_btns:
+                btn.update(mouse_pos)
+        for card in self.intro_cards:
+            card.update(dt)
+
+        # if dealer turn was queued while animations were running, trigger now
+        if self.pending_dealer_turn:
+            animating = any(c.animating for c in self.player_cards + self.dealer_cards)
+            if not animating:
+                self.pending_dealer_turn = False
+                self.dealer_turn()
+
+    def draw(self):
+        """
+        Render the current game state to the screen.
+        """
+        self.screen.fill(GREEN)
+        if self.state == 'intro':
+            for card in self.intro_cards:
+                card.draw(self.screen)
+        elif self.state == 'rules':
+            self.draw_rules()
+        elif self.state == 'game' or self.state == 'end':
+            self.draw_game()
+            if self.state == 'end':
+                for btn in self.play_again_btns:
+                    btn.draw(self.screen)
+
+    def draw_rules(self):
+        title = self.font_large.render("BLACKJACK", True, WHITE)
+        self.screen.blit(title, (WIDTH // 2 - title.get_width() // 2, 50))
+        dealer_text = self.font_medium.render("The Dealer should play:", True, WHITE)
+        self.screen.blit(dealer_text, (WIDTH // 2 - dealer_text.get_width() // 2, 120))
+        # update selection state
+        for j, btn in enumerate(self.mode_btns):
+            btn.selected = (j == self.dealer_mode)
+            btn.draw(self.screen)
+        threshold_text = self.font_medium.render("The Dealer has to draw on:", True, WHITE)
+        self.screen.blit(threshold_text, (WIDTH // 2 - threshold_text.get_width() // 2, 260))
+        self.threshold_input.draw(self.screen)
+        self.start_btn.draw(self.screen)
+        self.quit_btn.draw(self.screen)
+
+    def draw_game(self):
+        dealer_text = self.font_medium.render("Dealer's hand:", True, WHITE)
+        self.screen.blit(dealer_text, (50, 50))
+        for card in self.dealer_cards:
+            card.draw(self.screen)
+        # Show STAND! text when dealer stands during "with player" mode
+        if self.dealer_mode == 1 and self.dealer_stood and not self.player_stood:
+            stand_text = self.font_medium.render("STAND!", True, YELLOW)
+            # Position to the right of the dealer's last card
+            if self.dealer_cards:
+                last_card_x = self.dealer_cards[-1].rect.right + 20
+                self.screen.blit(stand_text, (last_card_x, 80))
+        player_text = self.font_medium.render("Your hand:", True, WHITE)
+        self.screen.blit(player_text, (50, HEIGHT - 300))
+        for card in self.player_cards:
+            card.draw(self.screen)
+        # Deck
+        deck_img = card_back_red  # or any back
+        deck_rect = deck_img.get_rect(center=self.deck_pos)
+        self.screen.blit(deck_img, deck_rect)
+        # Buttons
+        if self.state == 'game':
+            self.hit_btn.draw(self.screen)
+            self.stand_btn.draw(self.screen)
+        # Result
+        if self.result_text:
+            result_surf = self.font_large.render(self.result_text, True, YELLOW)
+            self.screen.blit(result_surf, (WIDTH // 2 - result_surf.get_width() // 2, HEIGHT // 2 - 50))
+        if self.totals_text:
+            totals_surf = self.font_medium.render(self.totals_text, True, WHITE)
+            self.screen.blit(totals_surf, (WIDTH // 2 - totals_surf.get_width() // 2, HEIGHT // 2))
+
+    def start_intro(self):
+        # compute shuffle length, fall back to 2s; split into two halves so total animation
+        # matches the sound duration. we'll apply easing on the return phase to create a bell curve.
+        length = shuffle_sound.get_length() if shuffle_sound else 2.0
+        half = length / 2.0
+        self.intro_out = half
+        self.intro_back = half
+        self.intro_cards = []
+        self.intro_phase = 0
+        self.intro_timer = 0.0
+        red_count = 0
+        blue_count = 0
+        for _ in range(40):
+            suit = random.randint(1, 4)
+            if suit in [2, 3]:
+                if red_count < 20:
+                    red_count += 1
+                else:
+                    suit = random.choice([1, 4])
+                    blue_count += 1
+            else:
+                if blue_count < 20:
+                    blue_count += 1
+                else:
+                    suit = random.choice([2, 3])
+                    red_count += 1
+            card = Card(1, suit, hidden=True)
+            card.pos = list(self.deck_pos)
+            self.intro_cards.append(card)
+        # Animate out using shuffle length
+        for card in self.intro_cards:
+            dx = random.randint(-WIDTH // 2, WIDTH // 2)
+            dy = random.randint(-HEIGHT // 2, HEIGHT // 2)
+            end_pos = (self.deck_pos[0] + dx, self.deck_pos[1] + dy)
+            card.move_to(end_pos, self.intro_out, 'out_cubic')
+        play_sound(shuffle_sound, "shuffle")
+
+    def handle_timer(self):
+        # clear pending timer to avoid unwanted transitions
+        print("handle_timer event", self.timer_event)
+        current = self.timer_event
+        self.reset_timers()
+        if current == 1:
+            # Gather back (reserved but not normally used anymore)
+            for card in self.intro_cards:
+                card.move_to(self.deck_pos, self.intro_back, 'in_out_cubic')
+            self.timer_event = 2
+            pygame.time.set_timer(pygame.USEREVENT + 2, int(self.intro_back * 1000))
+        elif current == 2:
+            self.state = 'rules'
+        elif current == 3:
+            self.state = 'end'
+        elif current == 4:
+            self.on_reveal_done()
+        elif current == 5:
+            self.flip_next()
+
     def start_game(self):
+        """
+        Reset game state for a new round and begin dealing initial cards.
+        """
+        # prepare for new round
+        self.state = 'game'                    # <--- ensure state switches back
+        self.reset_timers()
         self.used_cards.clear()
         self.player_cards = []
         self.dealer_cards = []
-        self.result_label.setText("")
-        self.totals_label.setText("")
-        self.dealer_has_stood = False
-        self._dealer_playing = False
+        self.result_text = ""
+        self.totals_text = ""
+        self.player_stood = False
+        self.dealer_stood = False
+        # initially controls disabled until cards dealt
+        self.hit_btn.enabled = False
+        self.stand_btn.enabled = False
+        self.deal_initial()
 
-        if self.dealer_stand_label is not None:
-            self.dealer_stand_label.hide()
-
-        for w in self.dealer_widgets + self.player_widgets + self.shuffle_widgets:
-            try:
-                w.deleteLater()
-            except Exception:
-                pass
-        self.dealer_widgets = []
-        self.player_widgets = []
-        self.shuffle_widgets = []
-
-        self.hit_btn.setEnabled(False)
-        self.stand_btn.setEnabled(False)
-
-        # deal initial cards from pile (cards animate from pile)
-        self.deal_initial_cards()
-
-    # ------------------------------------------------------------------
-    # initial dealing after pile exists
-    # ------------------------------------------------------------------
-    def deal_initial_cards(self):
-        # create a fresh sequential group for the deal animations
-        self.intro_group = QSequentialAnimationGroup(self)
-
-        # dealer initial 2 cards: first up, second down (horizontal layout)
+    def deal_initial(self):
+        self.deal_cards = []
+        # Dealer 2
         for i in range(2):
-            c = self.draw_card()
-            self.dealer_cards.append(c)
-            hidden = (i == 1)
-            self.add_animated_card(c, self.dealer_container, self.dealer_widgets, 300, hidden, dealer=True)
+            card_data = self.draw_card()
+            card = Card(card_data[0], card_data[1], hidden=(i == 1))
+            self.dealer_cards.append(card)
+            card.pos = list(self.deck_pos)
+            card.rect.center = card.pos
+            target_x = 50 + (len(self.dealer_cards) - 1) * 110 + 50
+            self.deal_cards.append((card, (target_x, 80 + 75), 0.5))
+        # Player 2
+        for i in range(2):
+            card_data = self.draw_card()
+            card = Card(card_data[0], card_data[1], hidden=False)
+            self.player_cards.append(card)
+            card.pos = list(self.deck_pos)
+            card.rect.center = card.pos
+            target_x = 50 + (len(self.player_cards) - 1) * 110 + 50
+            self.deal_cards.append((card, (target_x, HEIGHT - 270 + 75), 0.5))
+        self.deal_index = 0
+        self.dealing = True
+        self.deal_next()
 
-        # player: 2 cards, both face up (horizontal)
-        for _ in range(2):
-            c = self.draw_card()
-            self.player_cards.append(c)
-            self.add_animated_card(c, self.player_container, self.player_widgets, 400, False, dealer=False)
-
-        def after_deal():
-            # If auto-start mode, dealer should draw remaining cards face-down from the pile (and widgets visible)
-            if self.dealer_mode == self.MODE_AUTO_START:
-                # animate extra dealer cards from pile as face-down widgets
-                self.deal_extra_dealer_cards_auto_start()
-            else:
-                if self.player_has_blackjack():
-                    QTimer.singleShot(0, self.dealer_turn_logic)
-                else:
-                    self.enable_controls()
-
-        self.intro_group.finished.connect(after_deal)
-        self.intro_group.start()
-
-    def deal_extra_dealer_cards_auto_start(self):
-        """Ensure extra dealer cards are created as visible face-down widgets and animated from the pile."""
-        # create a new sequential group for these extra cards so animations run
-        group = QSequentialAnimationGroup(self)
-        self.intro_group = group
-
-        while self.calculate_score(self.dealer_cards) < self.dealer_stand_threshold:
-            c = self.draw_card()
-            self.dealer_cards.append(c)
-            # add widget and animation (face-down)
-            # add_animated_card will append animation to self.intro_group
-            self.add_animated_card(c, self.dealer_container, self.dealer_widgets, 220, True, dealer=True)
-
-        def after_extra():
-            if self.player_has_blackjack():
-                QTimer.singleShot(0, self.dealer_turn_logic)
+    def deal_next(self):
+        if self.deal_index < len(self.deal_cards):
+            card, pos, duration = self.deal_cards[self.deal_index]
+            card.move_to(pos, duration, on_finish=self.on_deal_finish)
+            play_sound(draw_sound, "draw")
+            self.deal_index += 1
+        else:
+            self.dealing = False
+            # Check blackjack or auto-start dealer draw
+            if self.calculate_score(self.player_cards) == 21:
+                self.dealer_turn()
+            elif self.dealer_mode == 0:
+                # draw extra dealer cards then enable controls afterwards
+                self.deal_extra_dealer(on_complete=self.enable_controls)
             else:
                 self.enable_controls()
 
-        # run the group and call after_extra when done
-        if group.animationCount() == 0:
-            after_extra()
+    def on_deal_finish(self):
+        self.deal_next()
+
+    def deal_extra_dealer(self, on_complete=None):
+        # sequentially deal face-down cards from pile until threshold met
+        def cond():
+            return self.calculate_score(self.dealer_cards) < self.dealer_threshold
+        self.queue_dealer_draws(hidden=True, condition_fn=cond, callback=on_complete or (lambda: None))
+
+    def player_hit(self):
+        card_data = self.draw_card()
+        card = Card(card_data[0], card_data[1], hidden=False)
+        self.player_cards.append(card)
+        card.pos = list(self.deck_pos)
+        card.rect.center = card.pos
+        target_x = 50 + (len(self.player_cards) - 1) * 110 + 50
+
+        def after_draw():
+            score = self.calculate_score(self.player_cards)
+            if score >= 21:
+                # queue dealer turn until all animations complete
+                self.pending_dealer_turn = True
+            elif self.dealer_mode == 1:
+                self.dealer_react()
+
+        card.move_to((target_x, HEIGHT - 270 + 75), 0.5, on_finish=after_draw)
+        play_sound(draw_sound, "draw")
+
+    def dealer_react(self):
+        if self.calculate_score(self.dealer_cards) < self.dealer_threshold:
+            card_data = self.draw_card()
+            card = Card(card_data[0], card_data[1], hidden=True)
+            self.dealer_cards.append(card)
+            card.pos = list(self.deck_pos)
+            card.rect.center = card.pos
+            target_x = 50 + (len(self.dealer_cards) - 1) * 110 + 50
+            card.move_to((target_x, 80 + 75), 0.5)
+            play_sound(draw_sound, "draw")
         else:
-            group.finished.connect(after_extra)
-            group.start()
+            # dealer stands (score >= threshold) during "with player" mode
+            self.dealer_stood = True
 
-    # ------------------------------------------------------------------
-    # card animation helper (cards fly from pile to target)
-    # dealer=True => horizontal dealer row; dealer cards should appear to come from below the pile
-    # dealer=False => player row; cards come from above the pile
-    # ------------------------------------------------------------------
-    def add_animated_card(self, data, container, widget_list, duration, hidden, dealer=False):
-        card = CardWidget(data, is_hidden=hidden, parent=container)
-        widget_list.append(card)
-
-        # ensure container sizing
-        if container.width() == 0:
-            container.setFixedHeight(160)
-            container.setFixedWidth(self.width() - 40)
-
-        card_w = 100
-        card_h = 150
-        spacing = 10
-
-        # compute horizontal target positions for both dealer and player (both horizontal)
-        for idx, w in enumerate(widget_list):
-            tx = idx * (card_w + spacing) + 10
-            ty = 5
-            w.move(tx, ty)
-
-        new_index = len(widget_list) - 1
-        target_pos = QPoint(new_index * (card_w + spacing) + 10, 5)
-
-        # start position: pile center mapped into container coordinates
-        if self.pile_widget is not None:
-            pile_center_global = self.pile_widget.mapToGlobal(self.pile_widget.rect().center())
-            start_center = container.mapFromGlobal(pile_center_global)
-            # For dealer cards, start below the pile (so they appear to come from bottom)
-            # For player cards, start above the pile (so they appear to come from top)
-            if dealer:
-                start_pos = QPoint(start_center.x() - card_w // 2, start_center.y() + 200)
-            else:
-                start_pos = QPoint(start_center.x() - card_w // 2, start_center.y() - 200)
-        else:
-            # fallback: off-screen above/below
-            if dealer:
-                start_pos = QPoint(container.width() // 2 - card_w // 2, container.height() + 50)
-            else:
-                start_pos = QPoint(container.width() // 2 - card_w // 2, -200)
-
-        card.move(start_pos)
-        card.hide()
-
-        incoming_anim = QPropertyAnimation(card, b"pos", self)
-        incoming_anim.setDuration(duration)
-        incoming_anim.setStartValue(start_pos)
-        incoming_anim.setEndValue(target_pos)
-        incoming_anim.setEasingCurve(QEasingCurve.OutCubic)
-
-        def _on_anim_state(new_state, _old_state):
-            if new_state == QAbstractAnimation.Running:
-                card.show()
-                # play draw sound
-                self.play_draw_sound()
-                try:
-                    incoming_anim.stateChanged.disconnect(_on_anim_state)
-                except Exception:
-                    pass
-
-        incoming_anim.stateChanged.connect(_on_anim_state)
-
-        if self.intro_group is None:
-            self.intro_group = QSequentialAnimationGroup(self)
-
-        self.intro_group.addAnimation(incoming_anim)
-
-    # ------------------------------------------------------------------
-    # dealer STAND! label
-    # ------------------------------------------------------------------
-    def show_dealer_stand_label(self):
-        if self.dealer_stand_label is None:
-            self.dealer_stand_label = QLabel("STAND!", self.dealer_container)
-            self.dealer_stand_label.setStyleSheet(
-                "color: white; font-weight: bold; font-size: 24px;"
-            )
-
-        # place to the right of dealer row
-        card_w = 100
-        spacing = 10
-        x = len(self.dealer_widgets) * (card_w + spacing) + 20
-        y = 40
-        self.dealer_stand_label.move(x, y)
-        self.dealer_stand_label.show()
-
-    def hide_dealer_stand_label(self):
-        if self.dealer_stand_label is not None:
-            self.dealer_stand_label.hide()
-
-    # ------------------------------------------------------------------
-    # controls enabling
-    # ------------------------------------------------------------------
     def enable_controls(self):
-        if self.calculate_score(self.player_cards) < 21:
-            self.hit_btn.setEnabled(True)
-            self.stand_btn.setEnabled(True)
-
-    # ------------------------------------------------------------------
-    # player hit + dealer reaction
-    # ------------------------------------------------------------------
-    def player_hit_logic(self):
-        if self._dealer_playing:
-            return
-
-        self.hit_btn.setEnabled(False)
-        self.stand_btn.setEnabled(False)
-
-        c = self.draw_card()
-        self.player_cards.append(c)
-
-        self.intro_group = QSequentialAnimationGroup(self)
-        self.add_animated_card(c, self.player_container, self.player_widgets, 400, False, dealer=False)
-
-        def after_hit():
-            p_score = self.calculate_score(self.player_cards)
-
-            if p_score == 21:
-                QTimer.singleShot(0, self.dealer_turn_logic)
-                return
-
-            if p_score > 21:
-                QTimer.singleShot(0, self.dealer_turn_logic)
-                return
-
-            if self.dealer_mode == self.MODE_WITH_PLAYER:
-                self.dealer_react_after_player_hit()
-            else:
-                self.enable_controls()
-
-        if self.intro_group.animationCount() == 0:
-            after_hit()
+        # only allow buttons when player hasn't stood and hasn't busted or hit 21
+        if not self.player_stood and self.calculate_score(self.player_cards) < 21:
+            self.hit_btn.enabled = True
+            self.stand_btn.enabled = True
         else:
-            self.intro_group.finished.connect(after_hit)
-            self.intro_group.start()
+            self.hit_btn.enabled = False
+            self.stand_btn.enabled = False
 
-    def dealer_react_after_player_hit(self):
-        if self.dealer_has_stood:
-            self.enable_controls()
-            return
-
-        d_score = self.calculate_score(self.dealer_cards)
-
-        if d_score < self.dealer_stand_threshold:
-            c = self.draw_card()
-            self.dealer_cards.append(c)
-
-            self.intro_group = QSequentialAnimationGroup(self)
-            # dealer hit during player phase: face-down widget drawn from pile, horizontal, coming from bottom
-            self.add_animated_card(c, self.dealer_container, self.dealer_widgets, 350, True, dealer=True)
-
-            def reenable():
-                self.enable_controls()
-
-            if self.intro_group.animationCount() == 0:
-                reenable()
-            else:
-                self.intro_group.finished.connect(reenable)
-                self.intro_group.start()
-        else:
-            self.dealer_has_stood = True
-            self.show_dealer_stand_label()
-            self.enable_controls()
-
-    # ------------------------------------------------------------------
-    # player stand → dealer's turn
-    # ------------------------------------------------------------------
-    def dealer_turn_logic(self):
-        if self._dealer_playing:
-            return
-
+    def dealer_turn(self):
+        """
+        Handle the dealer's turn: reveal hidden cards and play according to mode.
+        """
+        # disable player controls while dealer is revealing
+        self.hit_btn.enabled = False
+        self.stand_btn.enabled = False
         self._dealer_playing = True
-        self.hit_btn.setEnabled(False)
-        self.stand_btn.setEnabled(False)
-
-        # reveal all hidden dealer cards with flip animation, spaced 0.5s apart
-        hidden_widgets = [w for w in self.dealer_widgets if getattr(w, "is_hidden", False)]
-
-        def reveal_sequence(index=0):
-            if index >= len(hidden_widgets):
-                after_reveal()
-                return
-            w = hidden_widgets[index]
-            self.play_flip_sound()
-            w.reveal()
-            QTimer.singleShot(500, lambda: reveal_sequence(index + 1))
-
-        def after_reveal():
-            if self.dealer_mode == self.MODE_AUTO_START:
-                # dealer already auto-played at start; just end
-                self.hide_dealer_stand_label()
-                self.end_game()
-                return
-
-            if self.dealer_mode == self.MODE_WITH_PLAYER:
-                if self.dealer_has_stood:
-                    self.hide_dealer_stand_label()
-                    self.end_game()
-                else:
-                    # dealer now auto-plays until threshold; new cards face-up and drawn from pile
-                    self.dealer_auto_play_end_mode(show_stand=False)
-            else:  # MODE_AUTO_END
-                self.dealer_auto_play_end_mode(show_stand=False)
-
-        if hidden_widgets:
-            QTimer.singleShot(200, lambda: reveal_sequence(0))
+        hidden_cards = [c for c in self.dealer_cards if c.hidden]
+        if hidden_cards:
+            self.flip_cards = hidden_cards
+            self.flip_index = 0
+            self.flipping = True
+            self.flip_next()
         else:
-            after_reveal()
+            self.on_reveal_done()
 
-    def dealer_auto_play_end_mode(self, show_stand=False):
-        self.intro_group = QSequentialAnimationGroup(self)
-
-        while self.calculate_score(self.dealer_cards) < self.dealer_stand_threshold:
-            c = self.draw_card()
-            self.dealer_cards.append(c)
-            # during dealer's own turn, new cards are face up (horizontal)
-            self.add_animated_card(c, self.dealer_container, self.dealer_widgets, 350, False, dealer=True)
-
-        if show_stand:
-            self.show_dealer_stand_label()
+    # ------------------------------------------------------------------
+    # helper to queue sequential dealer draws (used by auto-play and extra-dealer)
+    def queue_dealer_draws(self, hidden, condition_fn, callback):
+        self.dealer_queue = []
+        # build list of cards to draw
+        while condition_fn():
+            card_data = self.draw_card()
+            card = Card(card_data[0], card_data[1], hidden=hidden)
+            self.dealer_cards.append(card)
+            card.pos = list(self.deck_pos)
+            card.rect.center = card.pos
+            target_x = 50 + (len(self.dealer_cards) - 1) * 110 + 50
+            self.dealer_queue.append((card, (target_x, 80 + 75), 0.5))
+        self.dealer_draw_index = 0
+        self.dealer_draw_callback = callback
+        if self.dealer_queue:
+            self.dealer_draw_next()
         else:
-            self.hide_dealer_stand_label()
+            # nothing to draw, just call callback immediately
+            callback()
 
-        if self.intro_group.animationCount() == 0:
+    def dealer_draw_next(self):
+        if self.dealer_draw_index < len(self.dealer_queue):
+            card, pos, duration = self.dealer_queue[self.dealer_draw_index]
+            self.dealer_draw_index += 1
+            card.move_to(pos, duration, on_finish=self.dealer_draw_next)
+            play_sound(draw_sound, "draw")
+        else:
+            # done
+            cb = getattr(self, 'dealer_draw_callback', None)
+            if cb:
+                self.dealer_draw_callback()
+                self.dealer_draw_callback = None
+
+    def flip_next(self):
+        if self.flip_index < len(self.flip_cards):
+            self.flip_cards[self.flip_index].flip(on_finish=self.on_flip_finish)
+            self.flip_index += 1
+        else:
+            self.flipping = False
+            self.on_reveal_done()
+
+    def on_flip_finish(self):
+        # wait then trigger next flip via timer_event 5
+        self.timer_event = 5
+        pygame.time.set_timer(pygame.USEREVENT + 5, 500)
+
+    def on_reveal_done(self):
+        if self.dealer_mode == 0:
             self.end_game()
+        elif self.dealer_mode == 1:
+            if self.calculate_score(self.dealer_cards) >= self.dealer_threshold:
+                self.end_game()
+            else:
+                self.dealer_auto_play()
         else:
-            self.intro_group.finished.connect(self.end_game)
-            self.intro_group.start()
+            self.dealer_auto_play()
 
-    # ------------------------------------------------------------------
-    # end game + replay / change rules
-    # ------------------------------------------------------------------
+    def dealer_auto_play(self):
+        # sequentially draw until threshold reached, then end game
+        def cond():
+            return self.calculate_score(self.dealer_cards) < self.dealer_threshold
+        self.queue_dealer_draws(hidden=False, condition_fn=cond, callback=self.end_game)
+
     def end_game(self):
+        """
+        Determine game outcome and transition to end state.
+        """
+        # dealer finished revealing, allow any UI cleanup
+        self._dealer_playing = False
         p_score = self.calculate_score(self.player_cards)
         d_score = self.calculate_score(self.dealer_cards)
-
         if p_score > 21 and d_score > 21:
             msg = "It's a draw! (both bust)"
         elif p_score > 21:
@@ -840,58 +1029,12 @@ class BlackjackGUI(QMainWindow):
             msg = "You lose!"
         else:
             msg = "It's a tie!"
+        self.result_text = msg
+        self.totals_text = f"Your: {p_score} | Dealer: {d_score}"
+        self.timer_event = 3
+        pygame.time.set_timer(pygame.USEREVENT + 3, 2000)
 
-        self.result_label.setText(msg)
-        self.totals_label.setText(f"Your: {p_score} | Dealer: {d_score}")
-
-        QTimer.singleShot(2000, self.ask_play_again)
-
-    def ask_play_again(self):
-        dlg = QDialog(self)
-        dlg.setWindowTitle("Play again?")
-        layout = QVBoxLayout(dlg)
-        layout.addWidget(QLabel("What would you like to do?"))
-        btn_row = QHBoxLayout()
-
-        yes_btn = QPushButton("Play again")
-        change_btn = QPushButton("Change rules")
-        no_btn = QPushButton("Quit")
-
-        def do_play_again():
-            dlg.done(1)
-
-        def do_change_rules():
-            dlg.done(2)
-
-        def do_quit():
-            dlg.done(0)
-
-        yes_btn.clicked.connect(do_play_again)
-        change_btn.clicked.connect(do_change_rules)
-        no_btn.clicked.connect(do_quit)
-
-        btn_row.addWidget(yes_btn)
-        btn_row.addWidget(change_btn)
-        btn_row.addWidget(no_btn)
-        layout.addLayout(btn_row)
-
-        result = dlg.exec()
-
-        if result == 1:
-            # keep same rules, start new game (pile already exists)
-            self.start_game()
-        elif result == 2:
-            # go back to rules screen (intro will not replay)
-            self.show_rules()
-        else:
-            self.close()
-
-
-# ----------------------------------------------------------------------
-# main entry
-# ----------------------------------------------------------------------
 if __name__ == "__main__":
-    app = QApplication(sys.argv)
-    win = BlackjackGUI()
-    win.show()
-    sys.exit(app.exec())
+    game = Game()
+    game.start_intro()
+    game.run()
