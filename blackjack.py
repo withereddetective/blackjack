@@ -670,7 +670,7 @@ class Game:
         """Get scaled position for dealer card."""
         card_width, card_height = get_card_dimensions()
         # Base positioning at reference resolution
-        base_x = 150
+        base_x = 100
         base_spacing = 60
         base_y = 80
         
@@ -682,7 +682,7 @@ class Game:
         """Get scaled position for player card."""
         card_width, card_height = get_card_dimensions()
         # Base positioning at reference resolution
-        base_x = 150
+        base_x = 100
         base_spacing = 60
         base_y_offset = 270
         
