@@ -17,6 +17,12 @@
    BLACKJACK CHANGELOG
 ==========================
 
+-------------------------------------
+Version 0.3.3 - Infinite Cards Hotfix
+
+• Fixed the hit button spam exploit
+-------------------------------------
+
 ------------------------------------
 Version 0.3.2 - Card Position Hotfix
 

@@ -1037,6 +1037,10 @@ class Game:
         card.rect.center = card.pos
         target_pos = self.get_player_card_pos(len(self.player_cards) - 1)
 
+        # Disable buttons during animation
+        self.hit_btn.enabled = False
+        self.stand_btn.enabled = False
+
         def after_draw():
             score = self.calculate_score(self.player_cards)
             if score >= 21:
@@ -1044,6 +1048,7 @@ class Game:
                 self.pending_dealer_turn = True
             elif self.dealer_mode == 1:
                 self.dealer_react()
+            self.enable_controls()
 
         card.move_to(target_pos, 0.5, on_finish=after_draw)
         play_sound(draw_sound, "draw")
@@ -1056,11 +1061,15 @@ class Game:
             card.pos = list(self.deck_pos)
             card.rect.center = card.pos
             target_pos = self.get_dealer_card_pos(len(self.dealer_cards) - 1)
-            card.move_to(target_pos, 0.5)
+            # Disable buttons during animation
+            self.hit_btn.enabled = False
+            self.stand_btn.enabled = False
+            card.move_to(target_pos, 0.5, on_finish=self.enable_controls)
             play_sound(draw_sound, "draw")
         else:
             # dealer stands (score >= threshold) during "with player" mode
             self.dealer_stood = True
+            self.enable_controls()
 
     def enable_controls(self):
         # only allow buttons when player hasn't stood and hasn't busted or hit 21
